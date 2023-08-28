@@ -5,19 +5,23 @@ pub fn build(b: *std.Build.Builder) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // const nnue = b.option(bool, "nnue", "Enable NNUE") orelse false;
-    // const options = b.addOptions();
-    // options.addOption(bool, "nnue", nnue);
-
-    const base_flags = [_][]const u8{ "-Wall", "-DSIMD" };
+    const base_flags = [_][]const u8{
+        "-std=c++17",
+        "-Wall",
+        "-Wextra",
+        "-Wpedantic",
+    };
 
     const flags = blk: {
         var f = std.BoundedArray([]const u8, 16).init(0) catch unreachable;
         f.appendSlice(&base_flags) catch unreachable;
         if (builtin.cpu.arch.isX86()) {
-            // if (std.Target.x86.featureSetHas(builtin.cpu.features, .avx512)) {
-            //     f.append("-DAVX512") catch unreachable;
-            // }
+            f.appendSlice(&[_][]const u8{
+                "-DSIMD",
+                "-mavx2",
+                "-mbmi2",
+                "-msse2",
+            }) catch unreachable;
             if (std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)) {
                 f.append("-DAVX2") catch unreachable;
             }
@@ -34,10 +38,12 @@ pub fn build(b: *std.Build.Builder) void {
             //     f.append("-DUSE_SSE41 -msse4.1") catch unreachable;
             // }
         } else if (builtin.cpu.arch.isAARCH64()) {
-            // rpi4 does not report neon feature :-(
-            f.append("-DUSE_NEON") catch unreachable;
             if (std.Target.arm.featureSetHas(builtin.cpu.features, .neon)) {
-                f.append("-DUSE_NEON") catch unreachable;
+                f.appendSlice(&.{ "-DSIMD", "-DNEON" }) catch unreachable;
+            }
+            // rpi4 does not report neon feature, add it manually
+            else if (std.mem.eql(u8, builtin.cpu.model.name, "cortex_a72")) {
+                f.appendSlice(&.{ "-DSIMD", "-DNEON" }) catch unreachable;
             }
         }
 
@@ -50,9 +56,7 @@ pub fn build(b: *std.Build.Builder) void {
         .optimize = optimize,
     });
     lib.linkLibCpp();
-    lib.addIncludePath(std.Build.LazyPath{
-        .path = "src/",
-    });
+    lib.addIncludePath(std.Build.LazyPath{ .path = "src/" });
     lib.addCSourceFiles(&[_][]const u8{"src/interface/chessint.cpp"}, flags);
 
     // exe.addOptions("build_options", options);
@@ -67,4 +71,20 @@ pub fn build(b: *std.Build.Builder) void {
 
     // const run_step = b.step("run", "Run the app");
     // run_step.dependOn(&run_cmd.step);
+
+    const test_exe = b.addExecutable(std.Build.ExecutableOptions{
+        .name = "nnue-test",
+    });
+    test_exe.linkLibCpp();
+    test_exe.addIncludePath(std.Build.LazyPath{ .path = "src/" });
+    test_exe.addCSourceFiles(&[_][]const u8{
+        "src/interface/chessint.cpp",
+        "src/test/nnue_test.cpp",
+    }, flags);
+    b.installArtifact(test_exe);
+
+    const test_cmd = b.addRunArtifact(test_exe);
+
+    const test_step = b.step("test", "Run vendor test code");
+    test_step.dependOn(&test_cmd.step);
 }
